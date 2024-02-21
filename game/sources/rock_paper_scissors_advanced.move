@@ -51,8 +51,10 @@ module game::rock_paper_scissors_advanced {
     const ENotPlayer: u64 = 4;
     // 游戏状态不允许add salt
     const ENotAllowAddSaltBecauseStatus: u64 = 5;
-    // 游戏玩家已满
-    const EGameIsReady: u64 = 6;
+    const EIsInGame: u64 = 7;
+    const ENotAllowAddGameBecauseStatus: u64 = 8;
+    // 已经add hash了
+    const EAlreadyAddSalt: u64 = 9;
 
     // 奖池
     struct PrizePool has key, store {
@@ -60,6 +62,7 @@ module game::rock_paper_scissors_advanced {
         balance: Balance<SUI>
     }
 
+    // 管理员权限
     struct AdminCap has key {
         id: UID
     }
@@ -68,6 +71,7 @@ module game::rock_paper_scissors_advanced {
     struct GameSpace has key {
         id: UID,
         owner: address,
+        // 奖池
         prize_pool: PrizePool
     }
 
@@ -107,7 +111,7 @@ module game::rock_paper_scissors_advanced {
     }
 
 
-    // 部署人可往奖池放奖金, 支持split一部分金额
+    // 部署人可往奖池放奖金
     public entry fun add_prize(
         _: & AdminCap,
         gameSpace: &mut GameSpace,
@@ -122,7 +126,7 @@ module game::rock_paper_scissors_advanced {
         let player = tx_context::sender(ctx);
         let prize_pool_balance_value = balance::value(&gameSpace.prize_pool.balance);
 
-        // 奖池是否还有奖金
+        // 奖池没奖金无法开启一个游戏
         assert!(prize_pool_balance_value > PRIZE_PRE_GAME, EPrizePoolNotEnough);
 
         let game = Game {
@@ -140,17 +144,22 @@ module game::rock_paper_scissors_advanced {
         transfer::share_object(game);
     }
 
+    // 另一个玩家加入游戏（暂不实现退出游戏）
     public entry fun add_game(game: &mut Game, ctx: &mut TxContext){
-        // 是否玩家已经都进入游戏
-        assert!(game.player2 == DEFAULT_PLAYER, EGameIsReady);
+        // 游戏状态是否合法
+        assert!(game.status == STATUS_WAITING && game.player2 == DEFAULT_PLAYER, ENotAllowAddGameBecauseStatus);
 
         let player = tx_context::sender(ctx);
+        // 玩家1不能再次进入游戏
+        assert!(game.player1 != player, EIsInGame);
+
         // 增加玩家2
         game.player2 = player;
         // 修改游戏状态
         game.status = STATUS_READY;
     }
 
+    // 是否已经添加过hash
     public fun is_already_add_hash(game: &Game, player: address): bool {
         if (game.player1 == player && vector::length(&game.hash1) > 0) {
             // 如果地址是玩家1，且hash1有值，则代表加过hash了
@@ -163,6 +172,19 @@ module game::rock_paper_scissors_advanced {
         }
     }
 
+    public fun is_already_add_salt(game: &Game, player: address): bool {
+        if (game.player1 == player && game.gesture1 != NONE) {
+            // 如果地址是玩家1，且gesture1有值，则代表加过salt
+            true
+        } else if (game.player2 == player && game.gesture2 != NONE) {
+            // 如果地址是玩家2，且gesture2有值，则代表加过salt
+            true
+        }else {
+            false
+        }
+    }
+
+    // 是否是游戏的玩家
     fun is_player(game: &Game, player: address): bool {
         game.player1 == player || game.player2 == player
     }
@@ -183,6 +205,7 @@ module game::rock_paper_scissors_advanced {
         // 是否已经添加过hash
         assert!(!is_already_add_hash(game, player), EAlreadyAddHash);
 
+        // add hash
         if (game.player1 == player) {
             game.hash1 = hash;
         } else if (game.player2 == player) {
@@ -193,7 +216,7 @@ module game::rock_paper_scissors_advanced {
         let hash1_len = vector::length(&game.hash1);
         let hash2_len = vector::length(&game.hash2);
         if (hash1_len > 0 && hash2_len > 0) {
-            // hash 都提交，代表hash提交完毕
+            // 所有玩家hash提交完毕
             game.status = STATUS_HASHES_SUBMITTED;
         } else if (hash1_len > 0 || hash2_len > 0) {
             // 有一个hash没提交代表hash提交中
@@ -219,6 +242,9 @@ module game::rock_paper_scissors_advanced {
         // 是否是该游戏的玩家
         assert!(is_player(game, player), ENotPlayer);
 
+        // 是否已经add salt
+        assert!(!is_already_add_salt(game, player), EAlreadyAddSalt);
+
         if (game.player1 == player) {
             game.gesture1 = find_gesture(salt, &game.hash1);
         } else if (game.player2 == player) {
@@ -237,6 +263,7 @@ module game::rock_paper_scissors_advanced {
 
         // 都有手势则自动开奖
         if (game.gesture1 != NONE && game.gesture2 != NONE) {
+            // battle
             let p1win = play(game.gesture1, game.gesture2);
             let p2win = play(game.gesture2, game.gesture1);
 
